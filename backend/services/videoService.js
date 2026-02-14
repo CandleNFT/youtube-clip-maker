@@ -1,7 +1,7 @@
+const ytdl = require('@distube/ytdl-core');
 const path = require('path');
 const fs = require('fs');
-const https = require('https');
-const http = require('http');
+const { spawn } = require('child_process');
 
 class VideoService {
   constructor() {
@@ -24,20 +24,34 @@ class VideoService {
 
     console.log(`Downloading video from: ${youtubeUrl}`);
     
-    try {
-      // Use Cobalt API for reliable YouTube downloads
-      const cobaltResponse = await this.fetchFromCobalt(youtubeUrl);
-      
-      if (!cobaltResponse.url) {
-        throw new Error('No download URL returned from Cobalt');
-      }
+    const videoPath = path.join(outputDir, 'video.mp4');
+    const audioPath = path.join(outputDir, 'audio.mp3');
 
-      const videoPath = path.join(outputDir, 'video.mp4');
-      const audioPath = path.join(outputDir, 'audio.mp3');
-      
-      // Download the video file
-      await this.downloadFile(cobaltResponse.url, videoPath);
-      
+    try {
+      // Get video info
+      const info = await ytdl.getInfo(youtubeUrl);
+      const title = info.videoDetails.title;
+      const duration = parseInt(info.videoDetails.lengthSeconds);
+
+      console.log(`Video: ${title}, Duration: ${duration}s`);
+
+      // Download video
+      await new Promise((resolve, reject) => {
+        const video = ytdl(youtubeUrl, {
+          quality: 'highest',
+          filter: 'audioandvideo'
+        });
+
+        const writeStream = fs.createWriteStream(videoPath);
+        video.pipe(writeStream);
+
+        video.on('error', reject);
+        writeStream.on('finish', resolve);
+        writeStream.on('error', reject);
+      });
+
+      console.log('Video downloaded, extracting audio...');
+
       // Extract audio using ffmpeg
       await this.extractAudio(videoPath, audioPath);
 
@@ -46,106 +60,18 @@ class VideoService {
         audioPath,
         outputDir,
         metadata: {
-          title: cobaltResponse.filename || 'Unknown',
-          duration: null
+          title,
+          duration
         }
       };
     } catch (error) {
-      console.error('Download failed:', error);
-      throw error;
+      console.error('Download failed:', error.message);
+      throw new Error(`Failed to download video: ${error.message}`);
     }
-  }
-
-  fetchFromCobalt(youtubeUrl) {
-    return new Promise((resolve, reject) => {
-      const postData = JSON.stringify({
-        url: youtubeUrl,
-        vCodec: "h264",
-        vQuality: "720",
-        aFormat: "mp3",
-        isAudioOnly: false,
-        isNoTTWatermark: true,
-        isTTFullAudio: false,
-        disableMetadata: false
-      });
-
-      const options = {
-        hostname: 'api.cobalt.tools',
-        port: 443,
-        path: '/api/json',
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'application/json',
-          'Content-Length': Buffer.byteLength(postData)
-        }
-      };
-
-      const req = https.request(options, (res) => {
-        let data = '';
-        res.on('data', chunk => data += chunk);
-        res.on('end', () => {
-          try {
-            const parsed = JSON.parse(data);
-            if (parsed.status === 'error') {
-              reject(new Error(parsed.text || 'Cobalt API error'));
-            } else {
-              resolve(parsed);
-            }
-          } catch (e) {
-            reject(new Error('Failed to parse Cobalt response'));
-          }
-        });
-      });
-
-      req.on('error', reject);
-      req.write(postData);
-      req.end();
-    });
-  }
-
-  downloadFile(url, destPath) {
-    return new Promise((resolve, reject) => {
-      const file = fs.createWriteStream(destPath);
-      const protocol = url.startsWith('https') ? https : http;
-      
-      const request = (downloadUrl) => {
-        protocol.get(downloadUrl, (response) => {
-          // Handle redirects
-          if (response.statusCode === 301 || response.statusCode === 302) {
-            file.close();
-            fs.unlinkSync(destPath);
-            const newFile = fs.createWriteStream(destPath);
-            const redirectProtocol = response.headers.location.startsWith('https') ? https : http;
-            redirectProtocol.get(response.headers.location, (redirectResponse) => {
-              redirectResponse.pipe(newFile);
-              newFile.on('finish', () => {
-                newFile.close();
-                resolve(destPath);
-              });
-            }).on('error', reject);
-            return;
-          }
-          
-          response.pipe(file);
-          file.on('finish', () => {
-            file.close();
-            resolve(destPath);
-          });
-        }).on('error', (err) => {
-          fs.unlink(destPath, () => {});
-          reject(err);
-        });
-      };
-
-      request(url);
-    });
   }
 
   extractAudio(videoPath, audioPath) {
     return new Promise((resolve, reject) => {
-      const { spawn } = require('child_process');
-      
       const ffmpeg = spawn('ffmpeg', [
         '-i', videoPath,
         '-vn',
@@ -155,10 +81,16 @@ class VideoService {
         audioPath
       ]);
 
+      let stderr = '';
+      ffmpeg.stderr.on('data', (data) => {
+        stderr += data.toString();
+      });
+
       ffmpeg.on('close', (code) => {
         if (code === 0) {
           resolve(audioPath);
         } else {
+          console.error('FFmpeg error:', stderr);
           reject(new Error(`FFmpeg exited with code ${code}`));
         }
       });
