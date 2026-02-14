@@ -34,7 +34,7 @@ class VideoService {
         '--format', 'best[height<=1080]',
         '--output', videoPath,
         '--write-info-json',
-        '--extract-flat', 'false'
+        '--no-playlist'
       ];
 
       const ytDlpProcess = spawn('yt-dlp', ytDlpArgs);
