@@ -1,7 +1,6 @@
-const ytdl = require('@distube/ytdl-core');
 const path = require('path');
 const fs = require('fs');
-const { spawn } = require('child_process');
+const { spawn, execSync } = require('child_process');
 
 class VideoService {
   constructor() {
@@ -28,31 +27,27 @@ class VideoService {
     const audioPath = path.join(outputDir, 'audio.mp3');
 
     try {
-      // Get video info
-      const info = await ytdl.getInfo(youtubeUrl);
-      const title = info.videoDetails.title;
-      const duration = parseInt(info.videoDetails.lengthSeconds);
+      // Use yt-dlp with --cookies-from-browser workaround disabled
+      // Try basic download first
+      const ytdlpCmd = `yt-dlp "${youtubeUrl}" -f "best[height<=720]" -o "${videoPath}" --no-check-certificates --no-warnings 2>&1`;
+      
+      console.log('Running yt-dlp...');
+      const result = execSync(ytdlpCmd, { timeout: 300000, maxBuffer: 50 * 1024 * 1024 });
+      console.log('yt-dlp output:', result.toString());
 
-      console.log(`Video: ${title}, Duration: ${duration}s`);
-
-      // Download video
-      await new Promise((resolve, reject) => {
-        const video = ytdl(youtubeUrl, {
-          quality: 'highest',
-          filter: 'audioandvideo'
-        });
-
-        const writeStream = fs.createWriteStream(videoPath);
-        video.pipe(writeStream);
-
-        video.on('error', reject);
-        writeStream.on('finish', resolve);
-        writeStream.on('error', reject);
-      });
+      if (!fs.existsSync(videoPath)) {
+        // Check for different extension
+        const files = fs.readdirSync(outputDir);
+        const videoFile = files.find(f => f.startsWith('video.'));
+        if (videoFile) {
+          const actualPath = path.join(outputDir, videoFile);
+          fs.renameSync(actualPath, videoPath);
+        } else {
+          throw new Error('Video file not found after download');
+        }
+      }
 
       console.log('Video downloaded, extracting audio...');
-
-      // Extract audio using ffmpeg
       await this.extractAudio(videoPath, audioPath);
 
       return {
@@ -60,8 +55,8 @@ class VideoService {
         audioPath,
         outputDir,
         metadata: {
-          title,
-          duration
+          title: 'Downloaded Video',
+          duration: null
         }
       };
     } catch (error) {
@@ -81,16 +76,10 @@ class VideoService {
         audioPath
       ]);
 
-      let stderr = '';
-      ffmpeg.stderr.on('data', (data) => {
-        stderr += data.toString();
-      });
-
       ffmpeg.on('close', (code) => {
         if (code === 0) {
           resolve(audioPath);
         } else {
-          console.error('FFmpeg error:', stderr);
           reject(new Error(`FFmpeg exited with code ${code}`));
         }
       });
