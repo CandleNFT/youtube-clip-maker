@@ -1,0 +1,36 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "npm start"
+healthcheckPath = "/api/health"
+healthcheckTimeout = 30
+restartPolicyType = "on_failure"
+restartPolicyMaxRetries = 3
+
+[[services]]
+name = "youtube-clip-maker-backend"
+
+[services.source]
+repo = "your-github-username/youtube-clip-maker"
+branch = "main"
+rootDirectory = "backend"
+
+[services.build]
+buildCommand = "npm ci --omit=dev"
+
+[services.variables]
+NODE_ENV = "production"
+PORT = "3001"
+
+[services.networking]
+serviceDomain = "youtube-clip-maker-backend.up.railway.app"
+
+# FFmpeg installation
+[services.nixpacks]
+nixpkgs = ["nodejs_18", "ffmpeg-full", "imagemagick"]
+
+# Resource configuration for Railway
+[services.deploy]
+minReplicas = 1
+maxReplicas = 1
